@@ -1,0 +1,138 @@
+Script SQL - Criação do Schema:
+SQL
+-- Tabela principal de clientes
+CREATE TABLE cliente (
+id_cliente BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+nome_completo VARCHAR(150) NOT NULL,
+data_nascimento DATE NULL,
+sexo CHAR(1) NULL,
+telefone VARCHAR(15) NULL,
+email VARCHAR(100) NULL,
+criado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+atualizado_em TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Tabela de documentos com constraint UNIQUE
+CREATE TABLE documento (
+id_documento BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+id_cliente BIGINT NOT NULL REFERENCES cliente(id_cliente),
+tipo_documento VARCHAR(10) NOT NULL CHECK (tipo_documento IN ('CPF', 'CNPJ')),
+valor VARCHAR(20) NOT NULL,
+CONSTRAINT ux_documento_unico UNIQUE (tipo_documento, valor)
+);
+
+-- Tabela de feedback dos clientes
+CREATE TABLE feedback_cliente (
+id_feedback BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+id_cliente BIGINT NOT NULL REFERENCES cliente(id_cliente),
+servico_realizado VARCHAR(150) NOT NULL,
+nota SMALLINT NOT NULL CHECK (nota >= 0 AND nota <= 10),
+comentario TEXT,
+data_feedback TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Índices para performance
+CREATE INDEX idx_cliente_nome ON cliente(nome_completo);
+CREATE INDEX idx_documento_valor ON documento(valor);
+CREATE INDEX idx_feedback_data ON feedback_cliente(data_feedback);
+CREATE INDEX idx_feedback_servico ON feedback_cliente(servico_realizado);
+2.2 Rotina de UPSERT (Dia 3)
+Stored Procedure para Evitar Duplicidade:
+SQL
+CREATE OR REPLACE FUNCTION upsert_cliente(
+p_nome_completo VARCHAR(150),
+p_tipo_documento VARCHAR(10),
+p_valor_documento VARCHAR(20),
+p_data_nascimento DATE DEFAULT NULL,
+p_sexo CHAR(1) DEFAULT NULL,
+p_telefone VARCHAR(15) DEFAULT NULL,
+p_email VARCHAR(100) DEFAULT NULL
+) RETURNS BIGINT AS $$
+DECLARE
+v_id_cliente BIGINT;
+v_documento_existe BOOLEAN;
+BEGIN
+-- Verificar se documento já existe
+SELECT EXISTS(
+SELECT 1 FROM documento
+WHERE tipo_documento = p_tipo_documento
+AND valor = p_valor_documento
+) INTO v_documento_existe;
+
+IF v_documento_existe THEN
+-- Atualizar cliente existente
+UPDATE cliente
+SET nome_completo = p_nome_completo,
+data_nascimento = p_data_nascimento,
+sexo = p_sexo,
+telefone = p_telefone,
+email = p_email,
+atualizado_em = CURRENT_TIMESTAMP
+WHERE id_cliente = (
+SELECT id_cliente FROM documento
+WHERE tipo_documento = p_tipo_documento
+AND valor = p_valor_documento
+)
+RETURNING id_cliente INTO v_id_cliente;
+ELSE
+-- Inserir novo cliente
+INSERT INTO cliente (
+nome_completo, data_nascimento, sexo, telefone, email
+) VALUES (
+p_nome_completo, p_data_nascimento, p_sexo, p_telefone, p_email
+) RETURNING id_cliente INTO v_id_cliente;
+
+-- Inserir documento
+INSERT INTO documento (id_cliente, tipo_documento, valor)
+VALUES (v_id_cliente, p_tipo_documento, p_valor_documento);
+END IF;
+
+RETURN v_id_cliente;
+END;
+$$ LANGUAGE plpgsql;
+2.3 Dados de Teste (Dia 4)
+População com Dados Fictícios:
+SQL
+-- Inserir clientes de teste
+SELECT upsert_cliente('João Silva Santos', 'CPF', '123.456.789-00', '1985-05-15', 'M', '(11) 9999-8888', 'joao.silva@email.com');
+SELECT upsert_cliente('Maria Oliveira Souza', 'CPF', '987.654.321-00', '1990-08-22', 'F', '(11) 9777-6666', 'maria.oliveira@email.com');
+SELECT upsert_cliente('Carlos Eduardo Lima', 'CPF', '111.222.333-44', '1988-12-10', 'M', '(11) 9555-4444', 'carlos.lima@email.com');
+
+-- Inserir feedbacks de teste
+INSERT INTO feedback_cliente (id_cliente, servico_realizado, nota, comentario) VALUES
+(1, 'Troca de Óleo', 9, 'Serviço rápido e eficiente, equipe muito prestativa'),
+(1, 'Revisão Completa', 8, 'Bom atendimento, mas demorou um pouco mais que o esperado'),
+(2, 'Troca de Pneus', 10, 'Excelente serviço, profissionais muito capacitados'),
+(3, 'Alinhamento e Balanceamento', 7, 'Serviço OK, preço justo');
+2.4 Dashboard de Métricas (Dia 5)
+Consultas SQL para KPIs:
+SQL
+-- NPS (Net Promoter Score)
+SELECT
+COUNT(*) as total_feedbacks,
+ROUND(AVG(nota), 2) as nota_media,
+COUNT(CASE WHEN nota >= 9 THEN 1 END) as promotores,
+COUNT(CASE WHEN nota BETWEEN 7 AND 8 THEN 1 END) as neutros,
+COUNT(CASE WHEN nota <= 6 THEN 1 END) as detratores,
+ROUND(
+(COUNT(CASE WHEN nota >= 9 THEN 1 END) - COUNT(CASE WHEN nota <= 6 THEN 1 END)) * 100.0 / COUNT(*),
+2) as nps
+FROM feedback_cliente;
+
+-- Nota média por serviço
+SELECT
+servico_realizado,
+COUNT(*) as quantidade,
+ROUND(AVG(nota), 2) as nota_media
+FROM feedback_cliente
+GROUP BY servico_realizado
+ORDER BY nota_media DESC;
+
+-- Evolução temporal das notas
+SELECT
+DATE(data_feedback) as data,
+COUNT(*) as feedbacks_dia,
+ROUND(AVG(nota), 2) as nota_media_dia
+FROM feedback_cliente
+GROUP BY DATE(data_feedback)
+ORDER BY data DESC;
